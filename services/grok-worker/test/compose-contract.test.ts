@@ -102,8 +102,16 @@ describe('internal compose contract', () => {
     );
     assert.match(dashboard, /TEMPORAL_NAMESPACE: default/);
     assert.match(dashboard, /DB: postgres12/);
+    assert.match(dashboard, /ENABLE_ES: "true"/);
+    assert.match(dashboard, /ES_SEEDS: temporal-elasticsearch/);
+    assert.match(dashboard, /ES_VERSION: v7/);
+    assert.match(dashboard, /development-sql.yaml/);
+    assert.match(
+      dashboard,
+      /elasticsearch:7\.17\.27@sha256:9a6443f55243f6acbfeb4a112d15eb3b9aac74bf25e0e39fa19b3ddd3a6879d0/
+    );
     assert.match(dashboard, /\$\{JWT_SECRET:\?/);
     assert.match(dashboard, /\$\{POSTGRES_PASSWORD:\?/);
-    assert.doesNotMatch(dashboard, /ENABLE_ES/);
+    assert.doesNotMatch(dashboard, /9200:9200|7233:7233|8080:8080/);
   });
 });

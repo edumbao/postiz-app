@@ -1,0 +1,9 @@
+# Copied from gitroomhq/postiz-docker-compose dynamicconfig/development-sql.yaml.
+# The cache-refresh flag is marked dev-only by Temporal. Upstream Postiz ships
+# it so search attributes created at startup are visible to the same process.
+limit.maxIDLength:
+  - value: 255
+    constraints: {}
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true # Dev setup only. Please don't turn this on in production.
+    constraints: {}

@@ -6,11 +6,12 @@
 # The image applies its own Prisma schema on startup (prisma db push).
 # The fork schema adds five indexes and no tables or columns.
 #
-# No container_name is set. No host ports except 127.0.0.1:18080.
-# Temporal uses auto-setup with Postgres (schema and namespace "default").
-# Elasticsearch is not included. Upstream's compose file enables it for
-# Temporal visibility. The Postiz UI does not talk to Elasticsearch, and
-# Docker Desktop often cannot set vm.max_map_count for it.
+# No container_name is set. The only published port is 127.0.0.1:18080.
+# Temporal matches gitroomhq/postiz-docker-compose: auto-setup 1.28.1,
+# Postgres for persistence, Elasticsearch 7.17.27 for visibility
+# (ENABLE_ES, ES_SEEDS, ES_VERSION=v7), namespace default, and
+# dynamicconfig/development-sql.yaml. SQL visibility allows only 3 Text
+# search attributes, and the Postiz backend adds organizationId and postId.
 
 name: postiz-dashboard-local
 
@@ -73,6 +74,28 @@ services:
       retries: 10
       start_period: 20s
 
+  temporal-elasticsearch:
+    image: elasticsearch:7.17.27@sha256:9a6443f55243f6acbfeb4a112d15eb3b9aac74bf25e0e39fa19b3ddd3a6879d0
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
+      - cluster.routing.allocation.disk.threshold_enabled=true
+      - cluster.routing.allocation.disk.watermark.low=512mb
+      - cluster.routing.allocation.disk.watermark.high=256mb
+      - cluster.routing.allocation.disk.watermark.flood_stage=128mb
+    volumes:
+      - temporal-elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s\" || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
   temporal:
     image: temporalio/auto-setup:1.28.1@sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a
     restart: unless-stopped
@@ -81,16 +104,27 @@ services:
     depends_on:
       temporal-postgres:
         condition: service_healthy
+      temporal-elasticsearch:
+        condition: service_healthy
     environment:
       DB: postgres12
       DB_PORT: "5432"
       POSTGRES_USER: ${TEMPORAL_POSTGRES_USER:?TEMPORAL_POSTGRES_USER is required}
       POSTGRES_PWD: ${TEMPORAL_POSTGRES_PASSWORD:?TEMPORAL_POSTGRES_PASSWORD is required}
       POSTGRES_SEEDS: temporal-postgres
-      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/production-sql.yaml
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      ENABLE_ES: "true"
+      ES_SEEDS: temporal-elasticsearch
+      ES_VERSION: v7
       TEMPORAL_NAMESPACE: default
     volumes:
       - ./temporal/dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
 
   temporal-namespace:
     image: temporalio/admin-tools:1.28.1-tctl-1.18.4-cli-1.4.1@sha256:01537b62d995f27a0f0d33a01ac4caa6779622f454fb2eb36fed0dccd45c6244
@@ -98,7 +132,7 @@ services:
     init: true
     depends_on:
       temporal:
-        condition: service_started
+        condition: service_healthy
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CLI_ADDRESS: temporal:7233
@@ -167,3 +201,4 @@ volumes:
   postiz-config:
   postiz-uploads:
   temporal-postgres-data:
+  temporal-elasticsearch-data:

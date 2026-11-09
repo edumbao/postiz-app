@@ -1,11 +1,13 @@
 # Local Postiz dashboard
 
-Startup of this dashboard is **not verified**. In the authoring VM, Temporal
-never finished `Waiting for PostgreSQL to startup`, the namespace one-shot
-exited 1, and the Postiz container was not brought up. A short TCP check
-between containers timed out after DNS succeeded. Postgres and Redis health
-checks only probe themselves, so they stayed healthy. The compose file is
-still the one to try on the laptop, where the mock stack already runs.
+The laptop already reached the Postiz page at `http://127.0.0.1:18080`, then
+nginx returned 502 for `/api/auth/register` because the backend crashed.
+`TemporalRegister.onModuleInit` failed with `cannot have more than 3 search
+attribute of type Text`. That cap is SQL visibility. This file now matches
+`gitroomhq/postiz-docker-compose`: Elasticsearch 7.17.27 is the visibility
+store (`ENABLE_ES=true`, `ES_VERSION=v7`). This Elasticsearch change was not
+booted in the authoring VM. Container-to-container TCP fails there, so do
+not treat the new visibility store as verified until the laptop checks pass.
 
 This starts the real Postiz web app on `http://127.0.0.1:18080`. It is not the
 mock preview on port 18081.
@@ -36,10 +38,13 @@ does not publish `18081` or `15432` and it sets no `container_name`.
 
 ## Resources
 
-About 6 GB of free disk for the Postiz image, Postgres, Redis, and Temporal.
-About 4 GB of RAM while it is up. The first start also downloads the Prisma
-CLI into the app container, so it needs network access. Later starts reuse
-the volumes.
+About 8 GB of free disk. About 5 GB of RAM while Elasticsearch is up
+(`ES_JAVA_OPTS` is `-Xms256m -Xmx256m`, and the process needs more than that
+heap). The first start downloads images and the Prisma CLI. Elasticsearch
+is only on the compose network. Its port is not published. If it exits with
+`max virtual memory areas vm.max_map_count [65530] is too low`, raise that
+limit inside Docker Desktop's Linux VM. That is separate from the Postiz
+database.
 
 ## Windows setup
 
@@ -85,15 +90,41 @@ the local account. The page is the Postiz app, not the mock draft preview.
 `temporal operator namespace describe --namespace default`. It confirms
 auto-setup created the namespace.
 
-In the authoring environment, `docker compose config --quiet` succeeded and
-the rendered port was `127.0.0.1:18080` to container port 5000. Postgres and
-Redis became healthy. Temporal logged `Waiting for PostgreSQL to startup`
-until the namespace one-shot exited 1. Container-to-container TCP in that
-environment does not complete, so the Postiz container was not started and
-the login page was not opened. Do not treat this bundle as verified ready
-until the checks above pass on the laptop. The mock stack on that laptop
-already showed that its Docker network can serve a container, which this
-environment could not.
+Static checks after the Elasticsearch change: compose contract tests and
+`docker compose config --quiet`. No full boot was run in the authoring VM.
+
+## Upgrade an install that already booted
+
+The Postiz database, uploads, and config volumes stay. The Temporal
+namespace `default` was created while visibility was SQL, and that choice is
+stored with the namespace. Turning Elasticsearch on does not move an existing
+namespace. Reset only the Temporal Postgres volume so auto-setup creates the
+schema and the `default` namespace again with Elasticsearch visibility.
+
+From the dashboard folder, with Docker Desktop running:
+
+```powershell
+docker compose stop
+docker volume rm postiz-dashboard-local_temporal-postgres-data
+docker compose up -d
+```
+
+Do not remove these volumes:
+
+- `postiz-dashboard-local_postiz-postgres-data`
+- `postiz-dashboard-local_postiz-redis-data`
+- `postiz-dashboard-local_postiz-uploads`
+- `postiz-dashboard-local_postiz-config`
+
+Do not run `docker compose down -v` and do not run `docker system prune`.
+`.env` is left as it is. `setup-dashboard.ps1` will not overwrite it.
+If `docker volume rm` says the volume is in use, the Temporal containers are
+still running. Run `docker compose stop` again and repeat only that `rm`.
+
+After `up`, `temporal-namespace` should exit 0 and `postiz` should become
+healthy. `http://127.0.0.1:18080/api/auth/register` should no longer be a
+connection refused from nginx. Register in the browser. Do not connect a
+channel.
 
 ## Stop
 
