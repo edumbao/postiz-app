@@ -85,4 +85,25 @@ describe('internal compose contract', () => {
     assert.doesNotMatch(local, /temporal|elasticsearch|443:443|POSTIZ_IMAGE|tls\.crt/i);
     assert.doesNotMatch(local, /0\.0\.0\.0:/);
   });
+
+  it('pins the upstream dashboard image on loopback 18080 without fixed container names', async () => {
+    const dashboard = await readFile(
+      new URL('../../../deploy/internal/docker-compose.dashboard.yml', import.meta.url),
+      'utf8'
+    );
+    assert.doesNotMatch(dashboard, /:latest/);
+    assert.doesNotMatch(dashboard, /container_name:/);
+    assert.doesNotMatch(dashboard, /18081|15432|local-review-only/);
+    assert.match(dashboard, /name: postiz-dashboard-local/);
+    assert.match(dashboard, /127\.0\.0\.1:18080:5000/);
+    assert.match(
+      dashboard,
+      /ghcr\.io\/gitroomhq\/postiz-app:v2\.25\.3@sha256:1e376ff2cb781022d528f171719cf174cf693a985a30cb40eefb13eae3ddda13/
+    );
+    assert.match(dashboard, /TEMPORAL_NAMESPACE: default/);
+    assert.match(dashboard, /DB: postgres12/);
+    assert.match(dashboard, /\$\{JWT_SECRET:\?/);
+    assert.match(dashboard, /\$\{POSTGRES_PASSWORD:\?/);
+    assert.doesNotMatch(dashboard, /ENABLE_ES/);
+  });
 });

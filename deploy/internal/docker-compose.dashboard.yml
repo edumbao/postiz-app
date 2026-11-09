@@ -1,0 +1,169 @@
+# Local Postiz dashboard. Project name is fixed so it does not attach to
+# postiz-local-review or any other compose project.
+#
+# The app image is upstream Postiz v2.25.3, digest verified 2026-11-09.
+# It is not this fork. This fork is 59 commits ahead of that release.
+# The image applies its own Prisma schema on startup (prisma db push).
+# The fork schema adds five indexes and no tables or columns.
+#
+# No container_name is set. No host ports except 127.0.0.1:18080.
+# Temporal uses auto-setup with Postgres (schema and namespace "default").
+# Elasticsearch is not included. Upstream's compose file enables it for
+# Temporal visibility. The Postiz UI does not talk to Elasticsearch, and
+# Docker Desktop often cannot set vm.max_map_count for it.
+
+name: postiz-dashboard-local
+
+services:
+  postiz-postgres:
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - postiz-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  postiz-redis:
+    image: redis:7.4.12-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+    restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - postiz-redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  temporal-postgres:
+    image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    environment:
+      POSTGRES_USER: ${TEMPORAL_POSTGRES_USER:?TEMPORAL_POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${TEMPORAL_POSTGRES_PASSWORD:?TEMPORAL_POSTGRES_PASSWORD is required}
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d temporal"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  temporal:
+    image: temporalio/auto-setup:1.28.1@sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a
+    restart: unless-stopped
+    stop_grace_period: 60s
+    init: true
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ${TEMPORAL_POSTGRES_USER:?TEMPORAL_POSTGRES_USER is required}
+      POSTGRES_PWD: ${TEMPORAL_POSTGRES_PASSWORD:?TEMPORAL_POSTGRES_PASSWORD is required}
+      POSTGRES_SEEDS: temporal-postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/production-sql.yaml
+      TEMPORAL_NAMESPACE: default
+    volumes:
+      - ./temporal/dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+
+  temporal-namespace:
+    image: temporalio/admin-tools:1.28.1-tctl-1.18.4-cli-1.4.1@sha256:01537b62d995f27a0f0d33a01ac4caa6779622f454fb2eb36fed0dccd45c6244
+    restart: "no"
+    init: true
+    depends_on:
+      temporal:
+        condition: service_started
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CLI_ADDRESS: temporal:7233
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        i=0
+        while [ "$$i" -lt 60 ]; do
+          if temporal operator namespace describe --namespace default --address temporal:7233 >/dev/null 2>&1; then
+            exit 0
+          fi
+          i=$$((i+1))
+          sleep 2
+        done
+        echo "temporal namespace default was not created by auto-setup" >&2
+        exit 1
+
+  postiz:
+    image: ghcr.io/gitroomhq/postiz-app:v2.25.3@sha256:1e376ff2cb781022d528f171719cf174cf693a985a30cb40eefb13eae3ddda13
+    restart: unless-stopped
+    stop_grace_period: 60s
+    init: true
+    depends_on:
+      postiz-postgres:
+        condition: service_healthy
+      postiz-redis:
+        condition: service_healthy
+      temporal-namespace:
+        condition: service_completed_successfully
+    environment:
+      MAIN_URL: http://127.0.0.1:18080
+      FRONTEND_URL: http://127.0.0.1:18080
+      NEXT_PUBLIC_BACKEND_URL: http://127.0.0.1:18080/api
+      BACKEND_INTERNAL_URL: http://localhost:3000
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postiz-postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@postiz-redis:6379
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      IS_GENERAL: "true"
+      DISABLE_REGISTRATION: ${DISABLE_REGISTRATION:-false}
+      STORAGE_PROVIDER: local
+      UPLOAD_DIRECTORY: /uploads
+      NEXT_PUBLIC_UPLOAD_DIRECTORY: /uploads
+      NX_ADD_PLUGINS: "false"
+    volumes:
+      - postiz-config:/config
+      - postiz-uploads:/uploads
+    ports:
+      - "127.0.0.1:18080:5000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "Promise.all([fetch('http://127.0.0.1:5000/'), fetch('http://127.0.0.1:3002/health/status')]).then((rs)=>{if(rs[0].status>=500||!rs[1].ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 20s
+      timeout: 10s
+      retries: 12
+      start_period: 180s
+
+volumes:
+  postiz-postgres-data:
+  postiz-redis-data:
+  postiz-config:
+  postiz-uploads:
+  temporal-postgres-data:

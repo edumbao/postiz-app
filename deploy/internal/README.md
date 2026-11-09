@@ -9,6 +9,8 @@ docker compose -f deploy/internal/docker-compose.local.yml up -d --build
 
 Then open `http://127.0.0.1:18081`. Stop it with `docker compose -f deploy/internal/docker-compose.local.yml stop`. That command does not delete volumes and does not stop other Docker projects.
 
+The real Postiz dashboard, upstream image v2.25.3 on `http://127.0.0.1:18080`, is `DASHBOARD.md`. It is a different compose project, `postiz-dashboard-local`, and does not replace the mock stack.
+
 This directory is a review-only deployment for one team's own brand accounts.
 It is not a customer-facing SaaS and it does not replace the upstream
 `docker-compose.yaml` or `docker-compose.dev.yaml`.
