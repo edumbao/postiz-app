@@ -1,0 +1,7 @@
+# Temporal dynamic config for this internal stack.
+# Upstream dynamicconfig/development-sql.yaml sets
+# system.forceSearchAttributesCacheRefreshOnRead and labels it dev-only.
+# That flag is omitted here. limit.maxIDLength matches the upstream file.
+limit.maxIDLength:
+  - value: 255
+    constraints: {}

@@ -1,0 +1,7 @@
+This directory is part of the Postiz program.
+
+Postiz is licensed under the GNU Affero General Public License v3.0.
+The full license text is the LICENSE file at the repository root.
+These Phase 1 deployment and worker files are covered by that same license.
+They do not replace the upstream license and they do not change the license
+of the Postiz application.

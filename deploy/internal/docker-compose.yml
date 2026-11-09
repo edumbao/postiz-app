@@ -1,0 +1,327 @@
+# Internal Postiz stack for this fork. Review only.
+# This file does not replace the upstream docker-compose.yaml.
+# Image tags below were checked against Docker Hub on 2026-11-09.
+# Nothing here was started with `docker compose up`.
+
+name: postiz-internal
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postiz-postgres:
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - postiz-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - internal
+    logging: *logging
+
+  postiz-redis:
+    image: redis:7.4.12-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+    restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - postiz-redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - internal
+    logging: *logging
+
+  temporal-postgres:
+    image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_USER: ${TEMPORAL_POSTGRES_USER:?TEMPORAL_POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${TEMPORAL_POSTGRES_PASSWORD:?TEMPORAL_POSTGRES_PASSWORD is required}
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d temporal"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - internal
+    logging: *logging
+
+  temporal-elasticsearch:
+    image: elasticsearch:7.17.27@sha256:9a6443f55243f6acbfeb4a112d15eb3b9aac74bf25e0e39fa19b3ddd3a6879d0
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
+      - cluster.routing.allocation.disk.threshold_enabled=true
+      - cluster.routing.allocation.disk.watermark.low=512mb
+      - cluster.routing.allocation.disk.watermark.high=256mb
+      - cluster.routing.allocation.disk.watermark.flood_stage=128mb
+    volumes:
+      - temporal-elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    networks:
+      - internal
+    logging: *logging
+
+  temporal:
+    image: temporalio/auto-setup:1.28.1@sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a
+    restart: unless-stopped
+    stop_grace_period: 60s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+      temporal-elasticsearch:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ${TEMPORAL_POSTGRES_USER:?TEMPORAL_POSTGRES_USER is required}
+      POSTGRES_PWD: ${TEMPORAL_POSTGRES_PASSWORD:?TEMPORAL_POSTGRES_PASSWORD is required}
+      POSTGRES_SEEDS: temporal-postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/production-sql.yaml
+      ENABLE_ES: "true"
+      ES_SEEDS: temporal-elasticsearch
+      ES_VERSION: v7
+      TEMPORAL_NAMESPACE: default
+    volumes:
+      - ./temporal/dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+    networks:
+      - internal
+    logging: *logging
+
+  temporal-namespace:
+    image: temporalio/admin-tools:1.28.1-tctl-1.18.4-cli-1.4.1@sha256:01537b62d995f27a0f0d33a01ac4caa6779622f454fb2eb36fed0dccd45c6244
+    restart: "no"
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      temporal:
+        condition: service_started
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CLI_ADDRESS: temporal:7233
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        i=0
+        while [ "$$i" -lt 60 ]; do
+          if temporal operator namespace describe --namespace default --address temporal:7233 >/dev/null 2>&1; then
+            exit 0
+          fi
+          i=$$((i+1))
+          sleep 2
+        done
+        echo "temporal namespace default was not created by auto-setup" >&2
+        exit 1
+    networks:
+      - internal
+    logging: *logging
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0@sha256:cb17ea423d76a8a19a269d0bcd81fc12eee1f6365acd2a56b590dafb35696a95
+    profiles: ["internal-ui"]
+    restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      temporal-namespace:
+        condition: service_completed_successfully
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://127.0.0.1:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - internal
+    logging: *logging
+
+  postiz:
+    image: ${POSTIZ_IMAGE:?POSTIZ_IMAGE is required}
+    restart: unless-stopped
+    stop_grace_period: 60s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postiz-postgres:
+        condition: service_healthy
+      postiz-redis:
+        condition: service_healthy
+      temporal-namespace:
+        condition: service_completed_successfully
+    environment:
+      MAIN_URL: ${INTERNAL_PUBLIC_ORIGIN:?INTERNAL_PUBLIC_ORIGIN is required}
+      FRONTEND_URL: ${INTERNAL_PUBLIC_ORIGIN:?INTERNAL_PUBLIC_ORIGIN is required}
+      NEXT_PUBLIC_BACKEND_URL: ${INTERNAL_PUBLIC_ORIGIN:?INTERNAL_PUBLIC_ORIGIN is required}/api
+      BACKEND_INTERNAL_URL: http://localhost:3000
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postiz-postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@postiz-redis:6379
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      IS_GENERAL: "true"
+      DISABLE_REGISTRATION: ${DISABLE_REGISTRATION:?DISABLE_REGISTRATION is required}
+      STORAGE_PROVIDER: local
+      UPLOAD_DIRECTORY: /uploads
+      NEXT_PUBLIC_UPLOAD_DIRECTORY: /uploads
+      NX_ADD_PLUGINS: "false"
+    volumes:
+      - postiz-config:/config
+      - postiz-uploads:/uploads
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "Promise.all([fetch('http://127.0.0.1:5000/'), fetch('http://127.0.0.1:3002/health/status')]).then((rs)=>{if(rs[0].status>=500||!rs[1].ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+    networks:
+      - internal
+    logging: *logging
+
+  proxy:
+    image: nginx:1.28.3-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postiz:
+        condition: service_healthy
+    volumes:
+      - ./proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${INTERNAL_TLS_DIR:?INTERNAL_TLS_DIR is required}:/certs:ro
+    ports:
+      - "${INTERNAL_BIND_ADDRESS:-127.0.0.1}:80:80"
+      - "${INTERNAL_BIND_ADDRESS:-127.0.0.1}:443:443"
+    networks:
+      - internal
+    logging: *logging
+
+  grok-postgres:
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_USER: grok_worker
+      POSTGRES_PASSWORD: ${GROK_WORKER_DB_PASSWORD:?GROK_WORKER_DB_PASSWORD is required}
+      POSTGRES_DB: grok_worker
+    volumes:
+      - grok-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grok_worker -d grok_worker"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - internal
+    logging: *logging
+
+  grok-worker:
+    build:
+      context: ../../services/grok-worker
+    image: postiz-internal-grok-worker:phase1
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      grok-postgres:
+        condition: service_healthy
+    environment:
+      GROK_WORKER_MODE: "mock"
+      GROK_WORKER_STORE: postgres
+      GROK_WORKER_ENABLE_NETWORK: "false"
+      GROK_WORKER_ALLOW_PUBLISH: "false"
+      GROK_WORKER_DATABASE_URL: postgresql://grok_worker:${GROK_WORKER_DB_PASSWORD:?GROK_WORKER_DB_PASSWORD is required}@grok-postgres:5432/grok_worker
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    networks:
+      - internal
+    logging: *logging
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postiz-postgres-data:
+  postiz-redis-data:
+  postiz-config:
+  postiz-uploads:
+  temporal-postgres-data:
+  temporal-elasticsearch-data:
+  grok-postgres-data:
