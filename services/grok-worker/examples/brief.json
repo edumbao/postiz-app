@@ -1,0 +1,9 @@
+{
+  "teamId": "example-team",
+  "idempotencyKey": "example-brief-1",
+  "brief": "Write a short internal draft about a product update. Do not name a real customer.",
+  "integrationId": "example-integration",
+  "draftDate": "2026-12-01T12:00:00.000Z",
+  "settings": {},
+  "tags": []
+}

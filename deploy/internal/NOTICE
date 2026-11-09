@@ -1,0 +1,6 @@
+This directory is part of the Postiz program.
+
+Postiz is licensed under the GNU Affero General Public License v3.0.
+The full license text is the LICENSE file at the repository root.
+The compose files, proxy config, and runbook in this directory are covered
+by that same license. They do not replace upstream docker-compose.yaml.

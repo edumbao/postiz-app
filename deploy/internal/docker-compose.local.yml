@@ -1,0 +1,62 @@
+# Local mock review stack. Do not merge this file with docker-compose.yml.
+# It does not publish the app, call xAI, or open a social account.
+# Placeholder database password below is for this isolated local database only.
+
+name: postiz-internal-local
+
+services:
+  grok-postgres:
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    environment:
+      POSTGRES_USER: grok_worker
+      POSTGRES_PASSWORD: local-review-only
+      POSTGRES_DB: grok_worker
+    volumes:
+      - grok-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grok_worker -d grok_worker"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  grok-worker:
+    build:
+      context: ../../services/grok-worker
+    image: postiz-internal-local-grok-worker:phase1
+    restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
+    depends_on:
+      grok-postgres:
+        condition: service_healthy
+    environment:
+      GROK_WORKER_MODE: "mock"
+      GROK_WORKER_STORE: postgres
+      GROK_WORKER_ENABLE_NETWORK: "false"
+      GROK_WORKER_ALLOW_PUBLISH: "false"
+      GROK_WORKER_PREVIEW: "true"
+      GROK_WORKER_BIND: "0.0.0.0"
+      GROK_WORKER_SEED_BRIEF: "true"
+      GROK_WORKER_SEED_PATH: /app/examples/brief.json
+      GROK_WORKER_DATABASE_URL: postgresql://grok_worker:local-review-only@grok-postgres:5432/grok_worker
+    ports:
+      - "127.0.0.1:18081:8787"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  grok-postgres-data:
